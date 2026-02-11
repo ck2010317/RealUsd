@@ -1,4 +1,13 @@
-import { getDefaultConfig } from "@rainbow-me/rainbowkit";
+import { connectorsForWallets } from "@rainbow-me/rainbowkit";
+import {
+  metaMaskWallet,
+  coinbaseWallet,
+  walletConnectWallet,
+  injectedWallet,
+  trustWallet,
+  rabbyWallet,
+} from "@rainbow-me/rainbowkit/wallets";
+import { createConfig, http } from "wagmi";
 import {
   mainnet,
   polygon,
@@ -61,33 +70,52 @@ const immutableZkEvm = {
   blockExplorers: { default: { name: "Immutable Explorer", url: "https://explorer.immutable.com" } },
 } as const;
 
-export const config = getDefaultConfig({
-  appName: "RealUSD",
-  projectId: process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID || "demo",
-  chains: [
-    mainnet,
-    polygon,
-    arbitrum,
-    optimism,
-    avalanche,
-    bsc,
-    base,
-    linea,
-    fantom,
-    celo,
-    moonbeam,
-    scroll,
-    mantle,
-    blast,
-    fraxtal,
-    kava,
-    filecoin,
-    gnosis,
-    sonic,
-    soneium,
-    berachain,
-    hedera,
-    immutableZkEvm,
+const allChains = [
+  mainnet,
+  polygon,
+  arbitrum,
+  optimism,
+  avalanche,
+  bsc,
+  base,
+  linea,
+  fantom,
+  celo,
+  moonbeam,
+  scroll,
+  mantle,
+  blast,
+  fraxtal,
+  kava,
+  filecoin,
+  gnosis,
+  sonic,
+  soneium,
+  berachain,
+  hedera,
+  immutableZkEvm,
+] as const;
+
+// Use injected wallets directly — no WalletConnect project ID needed
+const connectors = connectorsForWallets(
+  [
+    {
+      groupName: "Popular",
+      wallets: [metaMaskWallet, coinbaseWallet, rabbyWallet, trustWallet, injectedWallet],
+    },
   ],
+  {
+    appName: "RealUSD",
+    // WalletConnect projectId only needed for WC-based wallets — not for injected
+    projectId: "00000000000000000000000000000000",
+  }
+);
+
+export const config = createConfig({
+  connectors,
+  chains: allChains,
+  transports: Object.fromEntries(
+    allChains.map((chain) => [chain.id, http()])
+  ) as Record<(typeof allChains)[number]["id"], ReturnType<typeof http>>,
   ssr: true,
 });
