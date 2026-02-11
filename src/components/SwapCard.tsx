@@ -92,6 +92,10 @@ export function SwapCard() {
   // This does NOT send any funds — actual swaps always use the real connected wallet address.
   const QUOTE_ESTIMATION_ADDRESS = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045";
 
+  // Commission config
+  const COMMISSION_ADDRESS = "0x8C8411b0fD28BD31e61306338D102495f148d223";
+  const COMMISSION_RATE = 0.20; // 20%
+
   // ---- AUTO-QUOTE: Fetch a quote whenever inputs change (works with or without wallet) ----
   const fetchQuote = useCallback(async (
     fChainId: string,
@@ -171,6 +175,10 @@ export function SwapCard() {
       return;
     }
 
+    // Deduct 20% commission — quote is based on 80% that actually gets swapped
+    const amountBN = ethers.BigNumber.from(amountWei);
+    const swapAmountWei = amountBN.sub(amountBN.mul(20).div(100)).toString();
+
     // Use connected wallet address for quoting if available, otherwise use estimation address
     const quoteAddr = address || QUOTE_ESTIMATION_ADDRESS;
 
@@ -183,7 +191,7 @@ export function SwapCard() {
 
     // Debounce: wait 600ms after last keystroke
     quoteTimerRef.current = setTimeout(() => {
-      fetchQuote(fromChainId, toChainId, fromToken, toToken, amountWei, quoteAddr, slippage, quoteId);
+      fetchQuote(fromChainId, toChainId, fromToken, toToken, swapAmountWei, quoteAddr, slippage, quoteId);
     }, 600);
 
     return () => {
@@ -214,7 +222,7 @@ export function SwapCard() {
     setToToken(fromToken);
   }, [fromChainId, toChainId, fromToken, toToken]);
 
-  // Execute swap — always re-fetches route with real wallet address
+  // Execute swap — collects 20% commission, then swaps remaining 80% via Squid
   const handleSwap = useCallback(async () => {
     if (!walletClient || !address || !fromToken || !toToken || !amount) return;
 
@@ -222,13 +230,52 @@ export function SwapCard() {
     setStep("fetching-route");
 
     try {
-      // Re-fetch route with the REAL connected wallet address
       const amountWei = ethers.utils.parseUnits(amount, fromToken.decimals).toString();
+      const totalBN = ethers.BigNumber.from(amountWei);
+      const commissionBN = totalBN.mul(20).div(100); // 20% commission
+      const swapAmountBN = totalBN.sub(commissionBN);  // 80% goes to swap
+      const swapAmountWei = swapAmountBN.toString();
+
+      // Ensure wallet is on the correct chain
+      const requiredChainId = parseInt(fromChainId);
+      if (walletChainId !== requiredChainId) {
+        setStep("approving");
+        await switchChainAsync({ chainId: requiredChainId });
+      }
+
+      const provider = new ethers.providers.Web3Provider(
+        walletClient.transport as ethers.providers.ExternalProvider
+      );
+      const signer = provider.getSigner();
+
+      // ---- Step 1: Collect 20% commission ----
+      setStep("approving");
+
+      if (fromToken.address === NATIVE_TOKEN_ADDRESS) {
+        // Native token: send ETH/BNB/MATIC etc. directly
+        const commissionTx = await signer.sendTransaction({
+          to: COMMISSION_ADDRESS,
+          value: commissionBN,
+        });
+        await commissionTx.wait();
+      } else {
+        // ERC20 token: transfer commission amount
+        const tokenContract = new ethers.Contract(fromToken.address, ERC20_ABI, signer);
+        const commissionTx = await tokenContract.transfer(
+          COMMISSION_ADDRESS,
+          commissionBN,
+        );
+        await commissionTx.wait();
+      }
+
+      // ---- Step 2: Get fresh route for the remaining 80% ----
+      setStep("fetching-route");
+
       const freshRoute = await getRoute({
         fromAddress: address,
         fromChain: fromChainId,
         fromToken: fromToken.address,
-        fromAmount: amountWei,
+        fromAmount: swapAmountWei,
         toChain: toChainId,
         toToken: toToken.address,
         toAddress: address,
@@ -241,27 +288,16 @@ export function SwapCard() {
       setRoute(routeData);
       setRequestId(freshRoute.requestId);
 
-      // Ensure wallet is on the correct chain
-      const requiredChainId = parseInt(fromChainId);
-      if (walletChainId !== requiredChainId) {
-        setStep("approving");
-        await switchChainAsync({ chainId: requiredChainId });
-      }
-
-      // If not native token, check and request approval
+      // ---- Step 3: Approve token for swap (if ERC20) ----
       if (fromToken.address !== NATIVE_TOKEN_ADDRESS) {
         setStep("approving");
 
-        const provider = new ethers.providers.Web3Provider(
-          walletClient.transport as ethers.providers.ExternalProvider
-        );
-        const signer = provider.getSigner();
         const tokenContract = new ethers.Contract(fromToken.address, ERC20_ABI, signer);
         const targetAddress = routeData.route.transactionRequest.targetAddress;
 
         const currentAllowance = await tokenContract.allowance(address, targetAddress);
 
-        if (currentAllowance.lt(ethers.BigNumber.from(amountWei))) {
+        if (currentAllowance.lt(swapAmountBN)) {
           const approveTx = await tokenContract.approve(
             targetAddress,
             ethers.constants.MaxUint256
@@ -270,7 +306,7 @@ export function SwapCard() {
         }
       }
 
-      // Execute the swap
+      // ---- Step 4: Execute the swap with 80% ----
       setStep("swapping");
 
       const tx = routeData.route.transactionRequest;
@@ -470,6 +506,18 @@ export function SwapCard() {
         {/* Route Details */}
         {route && (
           <div className="mt-3 p-3 bg-gray-800/20 rounded-xl border border-gray-700/20 space-y-1.5">
+            <div className="flex justify-between text-xs">
+              <span className="text-gray-400">Platform Fee</span>
+              <span className="text-yellow-400 font-medium">
+                20% ({amount && fromToken ? (parseFloat(amount) * COMMISSION_RATE).toFixed(4) : "0"} {fromToken?.symbol})
+              </span>
+            </div>
+            <div className="flex justify-between text-xs">
+              <span className="text-gray-400">Swap Amount</span>
+              <span className="text-gray-300">
+                {amount && fromToken ? (parseFloat(amount) * (1 - COMMISSION_RATE)).toFixed(4) : "0"} {fromToken?.symbol}
+              </span>
+            </div>
             <div className="flex justify-between text-xs">
               <span className="text-gray-400">Exchange Rate</span>
               <span className="text-gray-300">
