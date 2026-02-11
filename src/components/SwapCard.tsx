@@ -1,0 +1,659 @@
+"use client";
+
+import { useState, useCallback, useEffect, useRef } from "react";
+import { useAccount, useSwitchChain, useWalletClient } from "wagmi";
+import { ConnectButton } from "@rainbow-me/rainbowkit";
+import { ethers } from "ethers";
+import { ChainSelector } from "./ChainSelector";
+import { TokenSelector } from "./TokenSelector";
+import { TransactionStatus } from "./TransactionStatus";
+import {
+  SUPPORTED_CHAINS,
+  getTokensForChain,
+  NATIVE_TOKEN_ADDRESS,
+  ChainInfo,
+  TokenInfo,
+} from "@/config/chains";
+import { getRoute, RouteResponse, ERC20_ABI } from "@/lib/squid";
+
+type SwapStep = "idle" | "fetching-route" | "approving" | "swapping" | "tracking";
+
+interface ActiveTx {
+  hash: string;
+  requestId: string;
+  fromChainId: string;
+  toChainId: string;
+}
+
+export function SwapCard() {
+  // Chain & token state
+  const [fromChainId, setFromChainId] = useState("1");
+  const [toChainId, setToChainId] = useState("42161");
+  const [fromToken, setFromToken] = useState<TokenInfo | null>(null);
+  const [toToken, setToToken] = useState<TokenInfo | null>(null);
+  const [amount, setAmount] = useState("");
+  const [slippage, setSlippage] = useState(1);
+
+  // Route & quote state
+  const [route, setRoute] = useState<RouteResponse | null>(null);
+  const [requestId, setRequestId] = useState("");
+  const [step, setStep] = useState<SwapStep>("idle");
+  const [error, setError] = useState("");
+  const [activeTx, setActiveTx] = useState<ActiveTx | null>(null);
+  const [quoteLoading, setQuoteLoading] = useState(false);
+
+  // Debounce ref for auto-quoting
+  const quoteTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const quoteAbortRef = useRef(0); // incremented to cancel stale quotes
+
+  // Wallet
+  const { address, isConnected, chainId: walletChainId } = useAccount();
+  const { switchChainAsync } = useSwitchChain();
+  const { data: walletClient } = useWalletClient();
+
+  // Initialize tokens
+  useEffect(() => {
+    const fromTokens = getTokensForChain(fromChainId);
+    if (fromTokens.length > 0 && !fromToken) {
+      setFromToken(fromTokens[0]);
+    }
+    const toTokens = getTokensForChain(toChainId);
+    if (toTokens.length > 0 && !toToken) {
+      setToToken(toTokens[0]);
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Calculate fromAmount in wei based on token decimals
+  const getAmountInWei = useCallback((): string => {
+    if (!amount || !fromToken) return "0";
+    try {
+      return ethers.utils.parseUnits(amount, fromToken.decimals).toString();
+    } catch {
+      return "0";
+    }
+  }, [amount, fromToken]);
+
+  // Format toAmount for display
+  const formatTokenAmount = useCallback((rawAmount: string, decimals: number): string => {
+    try {
+      const formatted = ethers.utils.formatUnits(rawAmount, decimals);
+      const num = parseFloat(formatted);
+      if (num < 0.0001) return "<0.0001";
+      if (num < 1) return num.toFixed(6);
+      if (num < 1000) return num.toFixed(4);
+      return num.toLocaleString(undefined, { maximumFractionDigits: 2 });
+    } catch {
+      return "0";
+    }
+  }, []);
+
+  // A well-known Ethereum address used only for quote estimation when wallet is not connected.
+  // The Squid API requires fromAddress/toAddress for routing calculations.
+  // This does NOT send any funds — actual swaps always use the real connected wallet address.
+  const QUOTE_ESTIMATION_ADDRESS = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045";
+
+  // ---- AUTO-QUOTE: Fetch a quote whenever inputs change (works with or without wallet) ----
+  const fetchQuote = useCallback(async (
+    fChainId: string,
+    tChainId: string,
+    fToken: TokenInfo,
+    tToken: TokenInfo,
+    amountWei: string,
+    quoteAddress: string,
+    slip: number,
+    quoteId: number,
+  ) => {
+    try {
+      const params = {
+        fromAddress: quoteAddress,
+        fromChain: fChainId,
+        fromToken: fToken.address,
+        fromAmount: amountWei,
+        toChain: tChainId,
+        toToken: tToken.address,
+        toAddress: quoteAddress,
+        slippage: slip,
+        slippageConfig: { autoMode: 1 },
+        enableBoost: true,
+      };
+
+      const result = await getRoute(params);
+
+      // Only apply if this is still the latest quote
+      if (quoteAbortRef.current === quoteId) {
+        setRoute(result.data);
+        setRequestId(result.requestId);
+        setError("");
+      }
+    } catch (err: unknown) {
+      if (quoteAbortRef.current === quoteId) {
+        const message = err instanceof Error ? err.message : "Failed to get quote";
+        // Don't show error for minor issues during auto-quote
+        if (!message.includes("insufficient") && !message.includes("amount too low")) {
+          setError(message);
+        }
+        setRoute(null);
+      }
+    } finally {
+      if (quoteAbortRef.current === quoteId) {
+        setQuoteLoading(false);
+        if (step === "fetching-route") setStep("idle");
+      }
+    }
+  }, [step]);
+
+  // Auto-quote with debounce when any swap parameter changes
+  useEffect(() => {
+    // Clear previous timer
+    if (quoteTimerRef.current) {
+      clearTimeout(quoteTimerRef.current);
+    }
+
+    // Validate inputs — wallet NOT required for quoting
+    if (!fromToken || !toToken || !amount || parseFloat(amount) <= 0) {
+      setRoute(null);
+      setQuoteLoading(false);
+      return;
+    }
+
+    let amountWei: string;
+    try {
+      amountWei = ethers.utils.parseUnits(amount, fromToken.decimals).toString();
+    } catch {
+      setRoute(null);
+      setQuoteLoading(false);
+      return;
+    }
+
+    if (amountWei === "0") {
+      setRoute(null);
+      setQuoteLoading(false);
+      return;
+    }
+
+    // Use connected wallet address for quoting if available, otherwise use estimation address
+    const quoteAddr = address || QUOTE_ESTIMATION_ADDRESS;
+
+    // Show loading state immediately
+    setQuoteLoading(true);
+    setError("");
+
+    // Increment abort counter to cancel any in-flight quote
+    const quoteId = ++quoteAbortRef.current;
+
+    // Debounce: wait 600ms after last keystroke
+    quoteTimerRef.current = setTimeout(() => {
+      fetchQuote(fromChainId, toChainId, fromToken, toToken, amountWei, quoteAddr, slippage, quoteId);
+    }, 600);
+
+    return () => {
+      if (quoteTimerRef.current) {
+        clearTimeout(quoteTimerRef.current);
+      }
+    };
+  }, [fromChainId, toChainId, fromToken, toToken, amount, address, slippage, fetchQuote]);
+
+  const handleFromChainSelect = useCallback((chain: ChainInfo) => {
+    setFromChainId(chain.chainId);
+    setFromToken(null);
+    const tokens = getTokensForChain(chain.chainId);
+    if (tokens.length > 0) setFromToken(tokens[0]);
+  }, []);
+
+  const handleToChainSelect = useCallback((chain: ChainInfo) => {
+    setToChainId(chain.chainId);
+    setToToken(null);
+    const tokens = getTokensForChain(chain.chainId);
+    if (tokens.length > 0) setToToken(tokens[0]);
+  }, []);
+
+  const handleSwapDirection = useCallback(() => {
+    setFromChainId(toChainId);
+    setToChainId(fromChainId);
+    setFromToken(toToken);
+    setToToken(fromToken);
+  }, [fromChainId, toChainId, fromToken, toToken]);
+
+  // Execute swap — always re-fetches route with real wallet address
+  const handleSwap = useCallback(async () => {
+    if (!walletClient || !address || !fromToken || !toToken || !amount) return;
+
+    setError("");
+    setStep("fetching-route");
+
+    try {
+      // Re-fetch route with the REAL connected wallet address
+      const amountWei = ethers.utils.parseUnits(amount, fromToken.decimals).toString();
+      const freshRoute = await getRoute({
+        fromAddress: address,
+        fromChain: fromChainId,
+        fromToken: fromToken.address,
+        fromAmount: amountWei,
+        toChain: toChainId,
+        toToken: toToken.address,
+        toAddress: address,
+        slippage,
+        slippageConfig: { autoMode: 1 },
+        enableBoost: true,
+      });
+
+      const routeData = freshRoute.data as RouteResponse;
+      setRoute(routeData);
+      setRequestId(freshRoute.requestId);
+
+      // Ensure wallet is on the correct chain
+      const requiredChainId = parseInt(fromChainId);
+      if (walletChainId !== requiredChainId) {
+        setStep("approving");
+        await switchChainAsync({ chainId: requiredChainId });
+      }
+
+      // If not native token, check and request approval
+      if (fromToken.address !== NATIVE_TOKEN_ADDRESS) {
+        setStep("approving");
+
+        const provider = new ethers.providers.Web3Provider(
+          walletClient.transport as ethers.providers.ExternalProvider
+        );
+        const signer = provider.getSigner();
+        const tokenContract = new ethers.Contract(fromToken.address, ERC20_ABI, signer);
+        const targetAddress = routeData.route.transactionRequest.targetAddress;
+
+        const currentAllowance = await tokenContract.allowance(address, targetAddress);
+
+        if (currentAllowance.lt(ethers.BigNumber.from(amountWei))) {
+          const approveTx = await tokenContract.approve(
+            targetAddress,
+            ethers.constants.MaxUint256
+          );
+          await approveTx.wait();
+        }
+      }
+
+      // Execute the swap
+      setStep("swapping");
+
+      const tx = routeData.route.transactionRequest;
+
+      const txResponse = await walletClient.sendTransaction({
+        to: tx.targetAddress as `0x${string}`,
+        data: tx.data as `0x${string}`,
+        value: BigInt(tx.value),
+        gas: tx.gasLimit ? BigInt(tx.gasLimit) : undefined,
+      });
+
+      // Track transaction
+      setActiveTx({
+        hash: txResponse,
+        requestId: freshRoute.requestId,
+        fromChainId,
+        toChainId,
+      });
+      setStep("tracking");
+    } catch (err: unknown) {
+      console.error("Swap error:", err);
+      const message =
+        err instanceof Error
+          ? err.message.includes("user rejected")
+            ? "Transaction rejected by user"
+            : err.message
+          : "Swap failed";
+      setError(message);
+      setStep("idle");
+    }
+  }, [walletClient, address, fromToken, toToken, amount, fromChainId, toChainId, walletChainId, switchChainAsync, slippage]);
+
+  const handleTxComplete = useCallback(() => {
+    setStep("idle");
+    setRoute(null);
+    setAmount("");
+  }, []);
+
+  const estimatedOutput = route?.route?.estimate
+    ? formatTokenAmount(route.route.estimate.toAmount, toToken?.decimals || 18)
+    : null;
+  const estimatedMinOutput = route?.route?.estimate
+    ? formatTokenAmount(route.route.estimate.toAmountMin, toToken?.decimals || 18)
+    : null;
+  const fromAmountUSD = route?.route?.estimate?.fromAmountUSD;
+  const toAmountUSD = route?.route?.estimate?.toAmountUSD;
+  const totalGasUSD = route?.route?.estimate?.gasCosts?.reduce(
+    (sum, g) => sum + parseFloat(g.amountUSD || "0"),
+    0
+  );
+  const totalFeesUSD = route?.route?.estimate?.feeCosts?.reduce(
+    (sum, f) => sum + parseFloat(f.amountUSD || "0"),
+    0
+  );
+  const estimatedTime = route?.route?.estimate?.estimatedRouteDuration;
+
+  const isValidInput = fromToken && toToken && amount && parseFloat(amount) > 0;
+  const needsChainSwitch = isConnected && walletChainId !== parseInt(fromChainId);
+
+  return (
+    <div className="w-full max-w-md mx-auto">
+      <div className="bg-gray-900/80 backdrop-blur-xl border border-gray-800/50 rounded-2xl p-5 shadow-2xl shadow-black/30">
+        {/* Header */}
+        <div className="flex items-center justify-between mb-5">
+          <h2 className="text-lg font-bold text-white">Swap</h2>
+          {/* Slippage settings */}
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-gray-400">Slippage:</span>
+            <div className="flex gap-1">
+              {[0.5, 1, 3].map((s) => (
+                <button
+                  key={s}
+                  onClick={() => setSlippage(s)}
+                  className={`px-2 py-0.5 text-xs rounded-md transition-colors ${
+                    slippage === s
+                      ? "bg-green-500/20 text-green-400 border border-green-500/30"
+                      : "bg-gray-800 text-gray-400 border border-gray-700 hover:border-gray-600"
+                  }`}
+                >
+                  {s}%
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* From Section */}
+        <div className="bg-gray-800/30 rounded-xl p-4 border border-gray-700/30">
+          <div className="flex gap-3 mb-3">
+            <div className="flex-1">
+              <ChainSelector
+                selectedChainId={fromChainId}
+                onSelect={handleFromChainSelect}
+                label="From Chain"
+                excludeChainId={toChainId}
+              />
+            </div>
+            <div className="flex-1">
+              <TokenSelector
+                chainId={fromChainId}
+                selectedToken={fromToken}
+                onSelect={setFromToken}
+                label="Token"
+              />
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs text-gray-400 mb-1.5 font-medium uppercase tracking-wider">
+              Amount
+            </label>
+            <input
+              type="text"
+              value={amount}
+              onChange={(e) => {
+                const val = e.target.value;
+                if (val === "" || /^\d*\.?\d*$/.test(val)) {
+                  setAmount(val);
+                }
+              }}
+              placeholder="0.0"
+              className="w-full px-3 py-2.5 bg-gray-800/60 border border-gray-700/50 rounded-xl text-white text-lg font-medium placeholder-gray-600 focus:outline-none focus:border-green-500/50 transition-colors"
+            />
+            {fromAmountUSD && (
+              <div className="text-xs text-gray-500 mt-1 pl-1">${parseFloat(fromAmountUSD).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+            )}
+          </div>
+        </div>
+
+        {/* Swap Direction Button */}
+        <div className="flex justify-center -my-2 relative z-10">
+          <button
+            onClick={handleSwapDirection}
+            className="w-10 h-10 bg-gray-800 border-2 border-gray-700 rounded-xl flex items-center justify-center hover:border-green-500/50 hover:bg-gray-700 transition-all duration-200 group"
+          >
+            <svg
+              className="w-5 h-5 text-gray-400 group-hover:text-green-400 transition-colors"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" />
+            </svg>
+          </button>
+        </div>
+
+        {/* To Section */}
+        <div className="bg-gray-800/30 rounded-xl p-4 border border-gray-700/30">
+          <div className="flex gap-3 mb-3">
+            <div className="flex-1">
+              <ChainSelector
+                selectedChainId={toChainId}
+                onSelect={handleToChainSelect}
+                label="To Chain"
+                excludeChainId={fromChainId}
+              />
+            </div>
+            <div className="flex-1">
+              <TokenSelector
+                chainId={toChainId}
+                selectedToken={toToken}
+                onSelect={setToToken}
+                label="Token"
+              />
+            </div>
+          </div>
+
+          {/* Estimated output — always visible when user has typed an amount */}
+          <div className="bg-gray-800/60 rounded-xl px-3 py-2.5 border border-gray-700/30">
+            <div className="text-xs text-gray-400 mb-0.5">You receive (estimated)</div>
+            {quoteLoading ? (
+              <div className="space-y-1.5">
+                <div className="h-7 w-40 bg-gray-700/60 rounded-lg animate-pulse" />
+                <div className="h-3 w-28 bg-gray-700/40 rounded animate-pulse" />
+              </div>
+            ) : estimatedOutput && toToken ? (
+              <>
+                <div className="text-xl font-bold text-green-400">
+                  {estimatedOutput} <span className="text-base text-green-400/70">{toToken.symbol}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  {toAmountUSD && (
+                    <span className="text-xs text-gray-400">${parseFloat(toAmountUSD).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                  )}
+                  {estimatedMinOutput && (
+                    <span className="text-xs text-gray-500">
+                      · Min: {estimatedMinOutput} {toToken.symbol}
+                    </span>
+                  )}
+                </div>
+              </>
+            ) : (
+              <div className="text-lg text-gray-600 font-medium">0.0</div>
+            )}
+          </div>
+        </div>
+
+        {/* Route Details */}
+        {route && (
+          <div className="mt-3 p-3 bg-gray-800/20 rounded-xl border border-gray-700/20 space-y-1.5">
+            <div className="flex justify-between text-xs">
+              <span className="text-gray-400">Exchange Rate</span>
+              <span className="text-gray-300">
+                1 {fromToken?.symbol} ≈ {parseFloat(route.route.estimate.exchangeRate).toFixed(4)}{" "}
+                {toToken?.symbol}
+              </span>
+            </div>
+            <div className="flex justify-between text-xs">
+              <span className="text-gray-400">Price Impact</span>
+              <span
+                className={
+                  parseFloat(route.route.estimate.aggregatePriceImpact || "0") > 3
+                    ? "text-red-400"
+                    : "text-gray-300"
+                }
+              >
+                {route.route.estimate.aggregatePriceImpact}%
+              </span>
+            </div>
+            {totalGasUSD !== undefined && (
+              <div className="flex justify-between text-xs">
+                <span className="text-gray-400">Gas Cost</span>
+                <span className="text-gray-300">${totalGasUSD.toFixed(2)}</span>
+              </div>
+            )}
+            {totalFeesUSD !== undefined && totalFeesUSD > 0 && (
+              <div className="flex justify-between text-xs">
+                <span className="text-gray-400">Bridge Fee</span>
+                <span className="text-gray-300">${totalFeesUSD.toFixed(2)}</span>
+              </div>
+            )}
+            {estimatedTime && (
+              <div className="flex justify-between text-xs">
+                <span className="text-gray-400">Est. Time</span>
+                <span className="text-gray-300">
+                  ~{Math.ceil(estimatedTime / 60)} min
+                </span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Error Message */}
+        {error && (
+          <div className="mt-3 p-3 bg-red-500/10 border border-red-500/20 rounded-xl">
+            <p className="text-sm text-red-400">{error}</p>
+          </div>
+        )}
+
+        {/* Action Buttons */}
+        <div className="mt-4">
+          {!isConnected ? (
+            <div className="w-full flex justify-center">
+              <ConnectButton label={route ? "Connect Wallet to Swap" : "Connect Wallet"} />
+            </div>
+          ) : step === "tracking" && activeTx ? (
+            <TransactionStatus
+              txHash={activeTx.hash}
+              requestId={activeTx.requestId}
+              fromChainId={activeTx.fromChainId}
+              toChainId={activeTx.toChainId}
+              onComplete={handleTxComplete}
+            />
+          ) : needsChainSwitch ? (
+            <button
+              onClick={async () => {
+                try {
+                  await switchChainAsync({ chainId: parseInt(fromChainId) });
+                } catch {
+                  setError("Failed to switch chain");
+                }
+              }}
+              className="w-full py-3 px-4 bg-yellow-500/20 text-yellow-400 border border-yellow-500/30 rounded-xl font-semibold text-sm hover:bg-yellow-500/30 transition-colors"
+            >
+              Switch to {SUPPORTED_CHAINS.find((c) => c.chainId === fromChainId)?.name}
+            </button>
+          ) : !isValidInput ? (
+            <button
+              disabled
+              className="w-full py-3 px-4 rounded-xl font-semibold text-sm bg-gray-700 text-gray-500 cursor-not-allowed"
+            >
+              Enter an amount
+            </button>
+          ) : quoteLoading ? (
+            <button
+              disabled
+              className="w-full py-3 px-4 rounded-xl font-semibold text-sm bg-green-500/50 text-white cursor-wait"
+            >
+              <span className="flex items-center justify-center gap-2">
+                <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+                Getting best price...
+              </span>
+            </button>
+          ) : !route ? (
+            <button
+              disabled
+              className="w-full py-3 px-4 rounded-xl font-semibold text-sm bg-gray-700 text-gray-500 cursor-not-allowed"
+            >
+              {error ? "No route available" : "Enter an amount"}
+            </button>
+          ) : (
+            <button
+              onClick={handleSwap}
+              disabled={step === "approving" || step === "swapping"}
+              className={`w-full py-3 px-4 rounded-xl font-semibold text-sm transition-all duration-200 ${
+                step === "approving" || step === "swapping"
+                  ? "bg-green-500/50 text-white cursor-wait"
+                  : "bg-green-500 text-white hover:bg-green-600 shadow-lg shadow-green-500/25"
+              }`}
+            >
+              {step === "approving" ? (
+                <span className="flex items-center justify-center gap-2">
+                  <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
+                    <circle
+                      className="opacity-25"
+                      cx="12"
+                      cy="12"
+                      r="10"
+                      stroke="currentColor"
+                      strokeWidth="4"
+                      fill="none"
+                    />
+                    <path
+                      className="opacity-75"
+                      fill="currentColor"
+                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+                    />
+                  </svg>
+                  Approving Token...
+                </span>
+              ) : step === "swapping" ? (
+                <span className="flex items-center justify-center gap-2">
+                  <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
+                    <circle
+                      className="opacity-25"
+                      cx="12"
+                      cy="12"
+                      r="10"
+                      stroke="currentColor"
+                      strokeWidth="4"
+                      fill="none"
+                    />
+                    <path
+                      className="opacity-75"
+                      fill="currentColor"
+                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+                    />
+                  </svg>
+                  Confirm in Wallet...
+                </span>
+              ) : (
+                `Swap ${fromToken?.symbol} → ${toToken?.symbol}`
+              )}
+            </button>
+          )}
+        </div>
+
+        {/* Powered by */}
+        <div className="mt-4 text-center">
+          <span className="text-xs text-gray-600">
+            Powered by{" "}
+            <a
+              href="https://squidrouter.com"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-gray-500 hover:text-green-400 transition-colors"
+            >
+              Squid Router
+            </a>
+            {" "}×{" "}
+            <a
+              href="https://axelar.network"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-gray-500 hover:text-green-400 transition-colors"
+            >
+              Axelar
+            </a>
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
