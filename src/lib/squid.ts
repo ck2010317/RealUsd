@@ -58,14 +58,16 @@ export interface RouteEstimate {
 }
 
 export interface TransactionRequest {
-  routeType: string;
-  targetAddress: string;
+  type: string;
+  target: string;
   data: string;
   value: string;
   gasLimit: string;
   gasPrice: string;
   maxFeePerGas?: string;
   maxPriorityFeePerGas?: string;
+  requestId?: string;
+  expiry?: number;
 }
 
 export interface RouteResponse {

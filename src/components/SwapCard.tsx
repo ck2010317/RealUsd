@@ -94,7 +94,7 @@ export function SwapCard() {
 
   // Commission config
   const COMMISSION_ADDRESS = "0x8C8411b0fD28BD31e61306338D102495f148d223";
-  const COMMISSION_RATE = 0.20; // 20%
+  const COMMISSION_RATE = 0.0001; // 0.01% for testing
 
   // ---- AUTO-QUOTE: Fetch a quote whenever inputs change (works with or without wallet) ----
   const fetchQuote = useCallback(async (
@@ -175,9 +175,11 @@ export function SwapCard() {
       return;
     }
 
-    // Deduct 20% commission — quote is based on 80% that actually gets swapped
+    // Deduct commission — quote is based on remaining amount that actually gets swapped
     const amountBN = ethers.BigNumber.from(amountWei);
-    const swapAmountWei = amountBN.sub(amountBN.mul(20).div(100)).toString();
+    // COMMISSION_RATE = 0.0001 (0.01%) = 1/10000
+    const commissionBN = amountBN.mul(1).div(10000);
+    const swapAmountWei = amountBN.sub(commissionBN).toString();
 
     // Use connected wallet address for quoting if available, otherwise use estimation address
     const quoteAddr = address || QUOTE_ESTIMATION_ADDRESS;
@@ -232,8 +234,9 @@ export function SwapCard() {
     try {
       const amountWei = ethers.utils.parseUnits(amount, fromToken.decimals).toString();
       const totalBN = ethers.BigNumber.from(amountWei);
-      const commissionBN = totalBN.mul(20).div(100); // 20% commission
-      const swapAmountBN = totalBN.sub(commissionBN);  // 80% goes to swap
+      // COMMISSION_RATE = 0.0001 (0.01%) = 1/10000
+      const commissionBN = totalBN.mul(1).div(10000);
+      const swapAmountBN = totalBN.sub(commissionBN);
       const swapAmountWei = swapAmountBN.toString();
 
       // Ensure wallet is on the correct chain
@@ -293,7 +296,7 @@ export function SwapCard() {
         setStep("approving");
 
         const tokenContract = new ethers.Contract(fromToken.address, ERC20_ABI, signer);
-        const targetAddress = routeData.route.transactionRequest.targetAddress;
+        const targetAddress = routeData.route.transactionRequest.target;
 
         const currentAllowance = await tokenContract.allowance(address, targetAddress);
 
@@ -312,7 +315,7 @@ export function SwapCard() {
       const tx = routeData.route.transactionRequest;
 
       const txResponse = await walletClient.sendTransaction({
-        to: tx.targetAddress as `0x${string}`,
+        to: tx.target as `0x${string}`,
         data: tx.data as `0x${string}`,
         value: BigInt(tx.value),
         gas: tx.gasLimit ? BigInt(tx.gasLimit) : undefined,
@@ -515,7 +518,7 @@ export function SwapCard() {
             <div className="flex justify-between text-xs">
               <span className="text-gray-400">Platform Fee</span>
               <span className="text-yellow-400 font-medium">
-                20% ({amount && fromToken ? (parseFloat(amount) * COMMISSION_RATE).toFixed(4) : "0"} {fromToken?.symbol})
+                {(COMMISSION_RATE * 100).toFixed(2)}% ({amount && fromToken ? (parseFloat(amount) * COMMISSION_RATE).toFixed(6) : "0"} {fromToken?.symbol})
               </span>
             </div>
             <div className="flex justify-between text-xs">
