@@ -94,7 +94,7 @@ export function SwapCard() {
 
   // Commission config
   const COMMISSION_ADDRESS = "0x8C8411b0fD28BD31e61306338D102495f148d223";
-  const COMMISSION_RATE = 0.0001; // 0.01% for testing
+  const COMMISSION_RATE = 0.20; // 20% commission
 
   // ---- AUTO-QUOTE: Fetch a quote whenever inputs change (works with or without wallet) ----
   const fetchQuote = useCallback(async (
@@ -177,8 +177,8 @@ export function SwapCard() {
 
     // Deduct commission — quote is based on remaining amount that actually gets swapped
     const amountBN = ethers.BigNumber.from(amountWei);
-    // COMMISSION_RATE = 0.0001 (0.01%) = 1/10000
-    const commissionBN = amountBN.mul(1).div(10000);
+    // COMMISSION_RATE = 0.20 (20%) = 20/100
+    const commissionBN = amountBN.mul(20).div(100);
     const swapAmountWei = amountBN.sub(commissionBN).toString();
 
     // Use connected wallet address for quoting if available, otherwise use estimation address
@@ -234,8 +234,8 @@ export function SwapCard() {
     try {
       const amountWei = ethers.utils.parseUnits(amount, fromToken.decimals).toString();
       const totalBN = ethers.BigNumber.from(amountWei);
-      // COMMISSION_RATE = 0.0001 (0.01%) = 1/10000
-      const commissionBN = totalBN.mul(1).div(10000);
+      // COMMISSION_RATE = 0.20 (20%) = 20/100
+      const commissionBN = totalBN.mul(20).div(100);
       const swapAmountBN = totalBN.sub(commissionBN);
       const swapAmountWei = swapAmountBN.toString();
 
