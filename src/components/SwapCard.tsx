@@ -189,10 +189,10 @@ export function SwapCard() {
     // Increment abort counter to cancel any in-flight quote
     const quoteId = ++quoteAbortRef.current;
 
-    // Debounce: wait 600ms after last keystroke
+    // Debounce: wait 1200ms after last keystroke to avoid rate limits
     quoteTimerRef.current = setTimeout(() => {
       fetchQuote(fromChainId, toChainId, fromToken, toToken, swapAmountWei, quoteAddr, slippage, quoteId);
-    }, 600);
+    }, 1200);
 
     return () => {
       if (quoteTimerRef.current) {

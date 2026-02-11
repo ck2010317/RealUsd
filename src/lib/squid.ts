@@ -96,14 +96,44 @@ export interface StatusResponse {
   error?: Record<string, unknown>;
 }
 
+async function withRetry<T>(
+  fn: () => Promise<T>,
+  maxRetries: number = 3,
+  baseDelay: number = 2000
+): Promise<T> {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (error: unknown) {
+      if (
+        axios.isAxiosError(error) &&
+        error.response?.status === 429 &&
+        attempt < maxRetries
+      ) {
+        const delay = baseDelay * Math.pow(2, attempt);
+        console.warn(`Rate limited (429). Retrying in ${delay}ms... (attempt ${attempt + 1}/${maxRetries})`);
+        await new Promise((r) => setTimeout(r, delay));
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw new Error("Max retries exceeded");
+}
+
 export async function getRoute(params: RouteParams): Promise<{ data: RouteResponse; requestId: string }> {
   try {
-    const result = await squidApi.post("/v2/route", params);
-    const requestId = result.headers["x-request-id"] || "";
-    return { data: result.data, requestId };
+    return await withRetry(async () => {
+      const result = await squidApi.post("/v2/route", params);
+      const requestId = result.headers["x-request-id"] || "";
+      return { data: result.data, requestId };
+    });
   } catch (error: unknown) {
     if (axios.isAxiosError(error) && error.response) {
       console.error("Squid API error:", error.response.data);
+      if (error.response.status === 429) {
+        throw new Error("Too many requests. Please wait a moment and try again.");
+      }
       const message =
         error.response.data?.error?.message ||
         error.response.data?.message ||
@@ -122,15 +152,20 @@ export async function getTransactionStatus(params: {
   toChainId: string;
 }): Promise<StatusResponse> {
   try {
-    const result = await squidApi.get("/v2/status", {
-      params: {
-        transactionId: params.transactionId,
-        requestId: params.requestId,
-        fromChainId: params.fromChainId,
-        toChainId: params.toChainId,
-      },
-    });
-    return result.data;
+    // Build query params, omitting empty requestId
+    const queryParams: Record<string, string> = {
+      transactionId: params.transactionId,
+      fromChainId: params.fromChainId,
+      toChainId: params.toChainId,
+    };
+    if (params.requestId) {
+      queryParams.requestId = params.requestId;
+    }
+
+    return await withRetry(async () => {
+      const result = await squidApi.get("/v2/status", { params: queryParams });
+      return result.data;
+    }, 2, 3000);
   } catch (error: unknown) {
     if (axios.isAxiosError(error) && error.response) {
       console.error("Status API error:", error.response.data);

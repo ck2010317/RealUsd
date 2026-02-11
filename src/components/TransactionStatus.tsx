@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useRef } from "react";
 import { getTransactionStatus, StatusResponse } from "@/lib/squid";
 import { getExplorerTxUrl } from "@/config/chains";
 
@@ -29,63 +29,94 @@ export function TransactionStatus({
 }: TransactionStatusProps) {
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [error, setError] = useState<string>("");
-  const [retryCount, setRetryCount] = useState(0);
-
-  const checkStatus = useCallback(async () => {
-    try {
-      const result = await getTransactionStatus({
-        transactionId: txHash,
-        requestId,
-        fromChainId,
-        toChainId,
-      });
-      setStatus(result);
-      setError("");
-
-      const completedStatuses = ["success", "partial_success", "needs_gas"];
-      if (completedStatuses.includes(result.squidTransactionStatus)) {
-        onComplete?.();
-        return true;
-      }
-      return false;
-    } catch (err: unknown) {
-      if (
-        typeof err === "object" &&
-        err !== null &&
-        "response" in err &&
-        typeof (err as Record<string, unknown>).response === "object" &&
-        (err as Record<string, Record<string, unknown>>).response?.status === 404
-      ) {
-        setRetryCount((c) => c + 1);
-        if (retryCount >= 20) {
-          setError("Transaction not found after multiple retries.");
-          return true;
-        }
-        return false;
-      }
-      setError("Failed to check status. Will retry...");
-      return false;
-    }
-  }, [txHash, requestId, fromChainId, toChainId, retryCount, onComplete]);
+  const retryCountRef = useRef(0);
+  const consecutiveErrorsRef = useRef(0);
 
   useEffect(() => {
-    let interval: NodeJS.Timeout;
+    let timeout: NodeJS.Timeout;
     let mounted = true;
 
+    const BASE_INTERVAL = 15000; // 15 seconds base polling
+    const MAX_INTERVAL = 120000; // 2 minutes max
+    const MAX_RETRIES = 40; // ~10 minutes of polling
+
+    // Initial delay — cross-chain txs take time to index
+    const INITIAL_DELAY = 20000; // Wait 20s before first poll
+
+    const getNextInterval = () => {
+      const errors = consecutiveErrorsRef.current;
+      if (errors === 0) return BASE_INTERVAL;
+      // Exponential backoff: 15s, 30s, 60s, 120s
+      return Math.min(BASE_INTERVAL * Math.pow(2, errors), MAX_INTERVAL);
+    };
+
     const poll = async () => {
-      const done = await checkStatus();
-      if (mounted && !done) {
-        interval = setTimeout(poll, 5000);
+      if (!mounted) return;
+
+      try {
+        const result = await getTransactionStatus({
+          transactionId: txHash,
+          requestId,
+          fromChainId,
+          toChainId,
+        });
+
+        if (!mounted) return;
+        setStatus(result);
+        setError("");
+        consecutiveErrorsRef.current = 0;
+
+        const completedStatuses = ["success", "partial_success", "needs_gas"];
+        if (completedStatuses.includes(result.squidTransactionStatus)) {
+          onComplete?.();
+          return; // Stop polling
+        }
+      } catch (err: unknown) {
+        if (!mounted) return;
+        consecutiveErrorsRef.current++;
+        retryCountRef.current++;
+
+        const isAxiosError = typeof err === "object" && err !== null && "response" in err;
+        const status = isAxiosError
+          ? (err as { response?: { status?: number } }).response?.status
+          : undefined;
+
+        if (status === 404) {
+          // Transaction not indexed yet — normal for cross-chain, keep polling silently
+          if (retryCountRef.current <= 10) {
+            setError("Waiting for transaction to be indexed...");
+          } else if (retryCountRef.current >= MAX_RETRIES) {
+            setError("Transaction not found. Check the explorer links below.");
+            return; // Stop polling
+          } else {
+            setError("Still waiting for indexing. This can take a few minutes...");
+          }
+        } else if (status === 429) {
+          setError("Rate limited. Backing off...");
+        } else {
+          if (retryCountRef.current >= MAX_RETRIES) {
+            setError("Status check timed out. Check explorer links below.");
+            return; // Stop polling
+          }
+          setError("Checking status...");
+        }
+      }
+
+      // Schedule next poll with backoff
+      if (mounted) {
+        const interval = getNextInterval();
+        timeout = setTimeout(poll, interval);
       }
     };
 
-    poll();
+    // Wait before first poll to give the transaction time to be indexed
+    timeout = setTimeout(poll, INITIAL_DELAY);
 
     return () => {
       mounted = false;
-      clearTimeout(interval);
+      clearTimeout(timeout);
     };
-  }, [checkStatus]);
+  }, [txHash, requestId, fromChainId, toChainId, onComplete]);
 
   const statusInfo = status ? STATUS_LABELS[status.squidTransactionStatus] || STATUS_LABELS.ongoing : null;
   const fromExplorerUrl = getExplorerTxUrl(fromChainId, txHash);
