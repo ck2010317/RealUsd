@@ -19,7 +19,7 @@ export default function AppContent() {
               <span className="text-green-400">Made Real.</span>
             </h1>
             <p className="text-gray-400 text-base sm:text-lg">
-              Swap any token across 12+ blockchains instantly.
+              Swap any token across 23+ blockchains instantly.
               <br className="hidden sm:block" />
               Best rates. One click. No bridges needed.
             </p>
@@ -33,7 +33,7 @@ export default function AppContent() {
           {/* Stats */}
           <div className="mt-12 grid grid-cols-3 gap-8 text-center max-w-lg w-full">
             <div>
-              <div className="text-2xl font-bold text-white">12+</div>
+              <div className="text-2xl font-bold text-white">23+</div>
               <div className="text-xs text-gray-500 mt-1">Chains</div>
             </div>
             <div>
@@ -66,14 +66,6 @@ export default function AppContent() {
                 className="text-xs text-gray-500 hover:text-gray-300 transition-colors"
               >
                 Squid Router
-              </a>
-              <a
-                href="https://axelar.network"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-xs text-gray-500 hover:text-gray-300 transition-colors"
-              >
-                Axelar
               </a>
               <a
                 href="https://axelarscan.io"

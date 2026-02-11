@@ -642,15 +642,6 @@ export function SwapCard() {
             >
               Squid Router
             </a>
-            {" "}×{" "}
-            <a
-              href="https://axelar.network"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-gray-500 hover:text-green-400 transition-colors"
-            >
-              Axelar
-            </a>
           </span>
         </div>
       </div>
