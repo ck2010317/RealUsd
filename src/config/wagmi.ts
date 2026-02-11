@@ -70,6 +70,30 @@ const immutableZkEvm = {
   blockExplorers: { default: { name: "Immutable Explorer", url: "https://explorer.immutable.com" } },
 } as const;
 
+const monad = {
+  id: 143,
+  name: "Monad",
+  nativeCurrency: { name: "MON", symbol: "MON", decimals: 18 },
+  rpcUrls: { default: { http: ["https://rpc.monad.xyz"] } },
+  blockExplorers: { default: { name: "Monad Explorer", url: "https://explorer.monad.xyz" } },
+} as const;
+
+const peaq = {
+  id: 3338,
+  name: "Peaq",
+  nativeCurrency: { name: "PEAQ", symbol: "PEAQ", decimals: 18 },
+  rpcUrls: { default: { http: ["https://peaq.api.onfinality.io/public"] } },
+  blockExplorers: { default: { name: "Peaq Subscan", url: "https://peaq.subscan.io" } },
+} as const;
+
+const hyperEvm = {
+  id: 999,
+  name: "HyperEVM",
+  nativeCurrency: { name: "HYPE", symbol: "HYPE", decimals: 18 },
+  rpcUrls: { default: { http: ["https://rpc.hyperliquid.xyz/evm"] } },
+  blockExplorers: { default: { name: "Hyperliquid Explorer", url: "https://explorer.hyperliquid.xyz" } },
+} as const;
+
 const allChains = [
   mainnet,
   polygon,
@@ -94,6 +118,9 @@ const allChains = [
   berachain,
   hedera,
   immutableZkEvm,
+  monad,
+  peaq,
+  hyperEvm,
 ] as const;
 
 // Use injected wallets directly — no WalletConnect project ID needed
