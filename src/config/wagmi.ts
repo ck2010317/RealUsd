@@ -94,6 +94,22 @@ const hyperEvm = {
   blockExplorers: { default: { name: "Hyperliquid Explorer", url: "https://explorer.hyperliquid.xyz" } },
 } as const;
 
+const cronos = {
+  id: 25, // Cronos EVM chain ID (if available), otherwise use string
+  name: "Cronos",
+  nativeCurrency: { name: "CRO", symbol: "CRO", decimals: 8 },
+  rpcUrls: { default: { http: ["https://cronos-rpc.publicnode.com"] } },
+  blockExplorers: { default: { name: "Cronoscan", url: "https://cronoscan.com" } },
+} as const;
+
+const sui = {
+  id: 784, // Sui mainnet chain ID
+  name: "Sui",
+  nativeCurrency: { name: "SUI", symbol: "SUI", decimals: 9 },
+  rpcUrls: { default: { http: ["https://fullnode.mainnet.sui.io:443"] } },
+  blockExplorers: { default: { name: "SuiScan", url: "https://suiscan.xyz/mainnet" } },
+} as const;
+
 const allChains = [
   mainnet,
   polygon,
@@ -121,6 +137,8 @@ const allChains = [
   monad,
   peaq,
   hyperEvm,
+  cronos,
+  sui,
 ] as const;
 
 // Use injected wallets directly — no WalletConnect project ID needed

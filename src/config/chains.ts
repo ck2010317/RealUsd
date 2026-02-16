@@ -5844,6 +5844,38 @@ export const POPULAR_TOKENS: Record<string, TokenInfo[]> = {
       chainId: "56",
       logoURI: "https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/ethereum/assets/0xdAC17F958D2ee523a2206206994597C13D831ec7/logo.png",
     },
+    {
+      address: "0xB6C53431608E626AC81a9776ac3e999c5556717c",
+      symbol: "USDT.z",
+      name: "Zeus USDT",
+      decimals: 18,
+      chainId: "56",
+      logoURI: "https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/ethereum/assets/0xdAC17F958D2ee523a2206206994597C13D831ec7/logo.png",
+    },
+    {
+      address: "0x7F8EF43a9673d1107aE4fEBFb5a9B2E764807Ede",
+      symbol: "USDC.z",
+      name: "Zeus USDC",
+      decimals: 18,
+      chainId: "56",
+      logoURI: "https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/ethereum/assets/0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48/logo.png",
+    },
+    {
+      address: "0x5C2D66FBd3B25C91c5e3e54e52A26e5d2c7e6a2F",
+      symbol: "BTC.z",
+      name: "Zeus BTC",
+      decimals: 8,
+      chainId: "56",
+      logoURI: "https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/bitcoin/info/logo.png",
+    },
+    {
+      address: "0x0B3f42481C228F70756DbFA0309d3ddC2a5e0F6a",
+      symbol: "BTCbr",
+      name: "Bitcoin BR",
+      decimals: 8,
+      chainId: "56",
+      logoURI: "https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/bitcoin/info/logo.png",
+    },
   ],
   // Base
   "8453": [
