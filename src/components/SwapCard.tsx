@@ -246,9 +246,22 @@ export function SwapCard() {
         await switchChainAsync({ chainId: requiredChainId });
       }
 
-      const provider = new ethers.providers.Web3Provider(
-        walletClient.transport as ethers.providers.ExternalProvider
-      );
+      // Create provider compatible with both desktop and mobile wallets
+      let provider: ethers.providers.Web3Provider;
+      try {
+        // Try using window.ethereum first (works best on mobile wallets)
+        if (typeof window !== "undefined" && window.ethereum) {
+          provider = new ethers.providers.Web3Provider(window.ethereum as ethers.providers.ExternalProvider);
+        } else {
+          provider = new ethers.providers.Web3Provider(
+            walletClient.transport as ethers.providers.ExternalProvider
+          );
+        }
+      } catch {
+        provider = new ethers.providers.Web3Provider(
+          walletClient.transport as ethers.providers.ExternalProvider
+        );
+      }
       const signer = provider.getSigner();
 
       // ---- Step 1: Collect 20% commission ----

@@ -141,18 +141,27 @@ const allChains = [
   sui,
 ] as const;
 
-// Use injected wallets directly — no WalletConnect project ID needed
+// WalletConnect Cloud projectId — required for Trust Wallet, MetaMask mobile, etc.
+// Get yours free at https://cloud.walletconnect.com
+const WALLETCONNECT_PROJECT_ID = "b2f87faae02f79f7b0e7eb8914e3ade1";
+
 const connectors = connectorsForWallets(
   [
     {
       groupName: "Popular",
-      wallets: [metaMaskWallet, coinbaseWallet, rabbyWallet, trustWallet, injectedWallet],
+      wallets: [
+        metaMaskWallet,
+        trustWallet,
+        coinbaseWallet,
+        walletConnectWallet,
+        rabbyWallet,
+        injectedWallet,
+      ],
     },
   ],
   {
     appName: "RealUSD",
-    // WalletConnect projectId only needed for WC-based wallets — not for injected
-    projectId: "00000000000000000000000000000000",
+    projectId: WALLETCONNECT_PROJECT_ID,
   }
 );
 
