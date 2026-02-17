@@ -262,7 +262,8 @@ export function SwapCard() {
           walletClient.transport as ethers.providers.ExternalProvider
         );
       }
-      const signer = provider.getSigner();
+      // Use the connected wallet address to get signer — fixes "unknown account #0" error
+      const signer = provider.getSigner(address);
 
       // ---- Step 1: Collect 20% commission ----
       setStep("approving");
