@@ -328,16 +328,20 @@ export function SwapCard() {
 
       const tx = routeData.route.transactionRequest;
 
-      const txResponse = await walletClient.sendTransaction({
-        to: tx.target as `0x${string}`,
-        data: tx.data as `0x${string}`,
-        value: BigInt(tx.value),
-        gas: tx.gasLimit ? BigInt(tx.gasLimit) : undefined,
+      // Use signer.sendTransaction for better mobile compatibility
+      const swapTx = await signer.sendTransaction({
+        to: tx.target,
+        data: tx.data,
+        value: tx.value ? ethers.BigNumber.from(tx.value) : ethers.BigNumber.from("0"),
+        gasLimit: tx.gasLimit ? ethers.BigNumber.from(tx.gasLimit) : undefined,
       });
+      
+      const receipt = await swapTx.wait();
+      if (!receipt) throw new Error("Transaction failed");
 
       // Track transaction
       setActiveTx({
-        hash: txResponse,
+        hash: receipt.transactionHash,
         requestId: freshRoute.requestId,
         fromChainId,
         toChainId,

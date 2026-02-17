@@ -150,12 +150,13 @@ const connectors = connectorsForWallets(
     {
       groupName: "Popular",
       wallets: [
-        metaMaskWallet,
+        // Trust Wallet must come first for mobile deep linking
         trustWallet,
+        walletConnectWallet, // WalletConnect for mobile browsers
+        metaMaskWallet,
         coinbaseWallet,
-        walletConnectWallet,
         rabbyWallet,
-        injectedWallet,
+        injectedWallet, // Fallback for other wallets
       ],
     },
   ],
