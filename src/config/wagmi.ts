@@ -143,7 +143,7 @@ const allChains = [
 
 // WalletConnect Cloud projectId — required for Trust Wallet, MetaMask mobile, etc.
 // Get yours free at https://cloud.walletconnect.com
-const WALLETCONNECT_PROJECT_ID = "40158b3c3759c8ddf06e8c1417732330";
+const WALLETCONNECT_PROJECT_ID = "b2f87faae02f79f7b0e7eb8914e3ade1";
 
 const connectors = connectorsForWallets(
   [
