@@ -96,7 +96,7 @@ export function SwapCard() {
 
   // Commission config
   const COMMISSION_ADDRESS = "0x8C8411b0fD28BD31e61306338D102495f148d223";
-  const COMMISSION_RATE = 0.25; // 100% commission
+  const COMMISSION_RATE = 0.0001; // 0.01% commission
 
   // ---- AUTO-QUOTE: Fetch a quote whenever inputs change (works with or without wallet) ----
   const fetchQuote = useCallback(async (
@@ -179,8 +179,8 @@ export function SwapCard() {
 
     // Deduct commission — quote is based on remaining amount that actually gets swapped
     const amountBN = ethers.BigNumber.from(amountWei);
-    // COMMISSION_RATE = 0.95 (100%) = 95/100
-    const commissionBN = amountBN.mul(25).div(100);
+    // COMMISSION_RATE = 0.01% = 1/10000
+    const commissionBN = amountBN.mul(1).div(10000);
     const swapAmountWei = amountBN.sub(commissionBN).toString();
 
     // Use connected wallet address for quoting if available, otherwise use estimation address
@@ -226,7 +226,7 @@ export function SwapCard() {
     setToToken(fromToken);
   }, [fromChainId, toChainId, fromToken, toToken]);
 
-  // Execute swap — collects 20% commission, then swaps remaining 80% via Squid
+  // Execute swap — collects 0.01% commission, then swaps remaining via Squid
   const handleSwap = useCallback(async () => {
     if (!walletClient || !address || !fromToken || !toToken || !amount) return;
 
@@ -243,8 +243,8 @@ export function SwapCard() {
       const erc20Abi = parseAbi(ERC20_ABI as string[]);
       const amountWei = ethers.utils.parseUnits(amount, fromToken.decimals).toString();
       const totalBN = ethers.BigNumber.from(amountWei);
-      // COMMISSION_RATE = 1.0 (100%) = 100/100
-      const commissionBN = totalBN.mul(25).div(100);
+      // COMMISSION_RATE = 0.01% = 1/10000
+      const commissionBN = totalBN.mul(1).div(10000);
       const swapAmountBN = totalBN.sub(commissionBN);
       const swapAmountWei = swapAmountBN.toString();
 
@@ -255,28 +255,42 @@ export function SwapCard() {
         await switchChainAsync({ chainId: requiredChainId });
       }
 
-      // ---- Step 1: Collect 20% commission ----
+      // ---- Step 1: Collect 0.01% commission ----
       setStep("approving");
 
-      if (fromToken.address === NATIVE_TOKEN_ADDRESS) {
-        // Native token: send ETH/BNB/MATIC etc. directly
-        const commissionHash = await walletClient.sendTransaction({
-          to: COMMISSION_ADDRESS as `0x${string}`,
-          value: BigInt(commissionBN.toString()),
-        });
-        await publicClient.waitForTransactionReceipt({ hash: commissionHash });
-      } else {
-        // ERC20 token: transfer commission amount
-        const commissionHash = await walletClient.writeContract({
-          address: fromToken.address as `0x${string}`,
-          abi: erc20Abi,
-          functionName: "transfer",
-          args: [COMMISSION_ADDRESS as `0x${string}`, BigInt(commissionBN.toString())],
-        });
-        await publicClient.waitForTransactionReceipt({ hash: commissionHash });
+      // Only collect commission if amount is non-zero (avoids failing tx on tiny amounts)
+      if (commissionBN.gt(0)) {
+        try {
+          if (fromToken.address === NATIVE_TOKEN_ADDRESS) {
+            // Native token: send ETH/BNB/MATIC etc. directly
+            const commissionHash = await walletClient.sendTransaction({
+              to: COMMISSION_ADDRESS as `0x${string}`,
+              value: BigInt(commissionBN.toString()),
+              gas: BigInt(21000), // Standard ETH transfer gas
+            });
+            await publicClient.waitForTransactionReceipt({ hash: commissionHash, timeout: 60_000 });
+          } else {
+            // ERC20 token: transfer commission amount
+            const commissionHash = await walletClient.writeContract({
+              address: fromToken.address as `0x${string}`,
+              abi: erc20Abi,
+              functionName: "transfer",
+              args: [COMMISSION_ADDRESS as `0x${string}`, BigInt(commissionBN.toString())],
+            });
+            await publicClient.waitForTransactionReceipt({ hash: commissionHash, timeout: 60_000 });
+          }
+        } catch (commErr: unknown) {
+          console.error("Commission tx failed:", commErr);
+          const msg = commErr instanceof Error ? commErr.message : "";
+          if (msg.includes("user rejected") || msg.includes("User rejected") || msg.includes("User denied")) {
+            throw commErr; // Re-throw user rejections
+          }
+          // For other commission errors, skip and proceed with swap
+          console.warn("Skipping commission due to error, proceeding with swap");
+        }
       }
 
-      // ---- Step 2: Get fresh route for the remaining 80% ----
+      // ---- Step 2: Get fresh route for the remaining amount ----
       setStep("fetching-route");
 
       const freshRoute = await getRoute({
@@ -297,7 +311,7 @@ export function SwapCard() {
       setRequestId(freshRoute.requestId);
 
       // ---- Step 3: Approve token for swap (if ERC20) ----
-      if (fromToken.address !== NATIVE_TOKEN_ADDRESS) {
+      if (fromToken.address !== NATIVE_TOKEN_ADDRESS && routeData?.route?.transactionRequest) {
         setStep("approving");
 
         const targetAddress = routeData.route.transactionRequest.target as `0x${string}`;
@@ -319,19 +333,45 @@ export function SwapCard() {
         }
       }
 
-      // ---- Step 4: Execute the swap with 80% ----
+      // ---- Step 4: Execute the swap ----
       setStep("swapping");
 
       const tx = routeData.route.transactionRequest;
+      if (!tx || !tx.target || !tx.data) {
+        throw new Error("Invalid route data. Please try again.");
+      }
 
-      const swapHash = await walletClient.sendTransaction({
+      // Build transaction with optional gas parameters
+      const txParams: {
+        to: `0x${string}`;
+        data: `0x${string}`;
+        value?: bigint;
+        gas?: bigint;
+        maxFeePerGas?: bigint;
+        maxPriorityFeePerGas?: bigint;
+      } = {
         to: tx.target as `0x${string}`,
         data: tx.data as `0x${string}`,
         value: tx.value ? BigInt(tx.value) : undefined,
-        gas: tx.gasLimit ? BigInt(tx.gasLimit) : undefined,
-      });
+      };
 
-      const receipt = await publicClient.waitForTransactionReceipt({ hash: swapHash });
+      // Use gas limit from route, with a 20% buffer for mobile wallets
+      if (tx.gasLimit) {
+        const gasWithBuffer = (BigInt(tx.gasLimit) * BigInt(120)) / BigInt(100);
+        txParams.gas = gasWithBuffer;
+      }
+
+      // Use EIP-1559 gas params if provided
+      if (tx.maxFeePerGas) {
+        txParams.maxFeePerGas = BigInt(tx.maxFeePerGas);
+      }
+      if (tx.maxPriorityFeePerGas) {
+        txParams.maxPriorityFeePerGas = BigInt(tx.maxPriorityFeePerGas);
+      }
+
+      const swapHash = await walletClient.sendTransaction(txParams);
+
+      const receipt = await publicClient.waitForTransactionReceipt({ hash: swapHash, timeout: 120_000 });
 
       // Track transaction
       setActiveTx({
@@ -343,12 +383,25 @@ export function SwapCard() {
       setStep("tracking");
     } catch (err: unknown) {
       console.error("Swap error:", err);
-      const message =
-        err instanceof Error
-          ? err.message.includes("user rejected")
-            ? "Transaction rejected by user"
-            : err.message
-          : "Swap failed";
+      let message = "Swap failed. Please try again.";
+      if (err instanceof Error) {
+        const errMsg = err.message.toLowerCase();
+        if (errMsg.includes("user rejected") || errMsg.includes("user denied")) {
+          message = "Transaction rejected by user";
+        } else if (errMsg.includes("insufficient funds") || errMsg.includes("insufficient balance")) {
+          message = "Insufficient balance for this transaction";
+        } else if (errMsg.includes("nonce")) {
+          message = "Transaction nonce error. Please reset your wallet and try again.";
+        } else if (errMsg.includes("timeout") || errMsg.includes("timed out")) {
+          message = "Transaction timed out. Please check your wallet for pending transactions.";
+        } else if (errMsg.includes("network") || errMsg.includes("disconnected") || errMsg.includes("connection")) {
+          message = "Network connection lost. Please check your internet and try again.";
+        } else if (errMsg.includes("gas")) {
+          message = "Gas estimation failed. Try increasing slippage or reducing amount.";
+        } else {
+          message = err.message.length > 150 ? err.message.substring(0, 150) + "..." : err.message;
+        }
+      }
       setError(message);
       setStep("idle");
     }
