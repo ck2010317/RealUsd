@@ -301,12 +301,12 @@ export function SwapCard() {
         setStep("approving");
 
         const targetAddress = routeData.route.transactionRequest.target as `0x${string}`;
-        const currentAllowance = await publicClient.readContract({
+        const currentAllowance = (await publicClient.readContract({
           address: fromToken.address as `0x${string}`,
           abi: erc20Abi,
           functionName: "allowance",
           args: [address as `0x${string}`, targetAddress],
-        });
+        })) as bigint;
 
         if (currentAllowance < BigInt(swapAmountBN.toString())) {
           const approveHash = await walletClient.writeContract({
